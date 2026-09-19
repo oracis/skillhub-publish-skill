@@ -1,0 +1,21 @@
+name: skillhub-publish
+display_name: SkillHub/ClawHub 技能发布
+version: 1.1.0
+author: oracis
+category: 开发编程
+license: MIT
+homepage: https://github.com/oracis/skillhub-publish-skill
+description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub。覆盖官方 CLI 发布链路（2026.8.5+，Windows 可用）、网页 CDP 兜底路径、以及上传被拒时的二分排查法（scripts/waf_bisect.py 精确区分「WAF 拦内容 566」与「包结构/字段问题」）。内含打包白名单、slug 跨平台命名一致性、分类标签选择等实战踩坑。
+triggers:
+  - 发布技能到市场
+  - 上架 skill
+  - 推到 skillhub
+  - SkillHub 提交失败
+  - Failed to fetch 566
+  - 上传 zip 报错
+  - clawhub publish
+tags:
+  - skillhub
+  - clawhub
+  - publish
+  - skill-marketplace
