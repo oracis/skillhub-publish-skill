@@ -1,6 +1,6 @@
 ---
-name: skillhub-publish
-slug: skillhub-publish
+name: skillhub-publish-skill
+slug: skillhub-publish-skill
 displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖官方 CLI 发布链路、网页 CDP 兜底、以及上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
