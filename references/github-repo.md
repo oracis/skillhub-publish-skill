@@ -1,41 +1,54 @@
 # GitHub 建仓与推送
 
-**不需要向用户索要 PAT**——本机已有可用的长期凭据。
+## 第 0 步（最重要）：先确认仓库是否**已经存在**
 
-## 凭据在哪
+**别直接建仓。** 2026-09-19 实测踩坑：以为 `oracis/workbuddy-checkin` 是新建，
+结果它 **2026-09-02 就存在了**，而且内容比本地 staging 更完整
+（多出 `install.ps1` / `install.sh` / `.gitattributes`，skill 本体嵌在子目录里）。
+当时若按扁平结构强推，会**删掉两个安装脚本并改掉目录布局**——破坏性操作。
 
-`gh` CLI 本身**没登录**（`gh auth status` 报 not logged in，
-`~/.config/gh/hosts.yml` 里只有 `user: oracis` 没有 `oauth_token`），**别看错地方**。
-
-真正的 token 在 git 的 credential store：
-
-```bash
-cat "C:/Users/DELL/.git-credentials"
-# https://oracis:gho_xxxxxxxx@github.com
-```
-
-取出 token（scope = `gist, repo, workflow`，足够建仓 / 推代码 / 建 Actions）：
+动手前一律先探活：
 
 ```bash
-TOKEN=$(head -1 "C:/Users/DELL/.git-credentials" | sed -E 's#https://[^:]+:([^@]+)@github.com#\1#')
+gh repo view oracis/<repo> --json name,isEmpty,defaultBranchRef,createdAt,pushedAt,url
+# 或（无 gh 时）
+curl -o /dev/null -w "%{http_code}\n" -H "Authorization: token $TOKEN" \
+  https://api.github.com/repos/oracis/<repo>     # 200 = 已存在；404 = 可以建
 ```
 
-先用它验身份，确认有效再往下走：
+**已存在时不要 `gh repo create`**（会报 `GraphQL: Name already exists on this account`）。
+正确路径：`gh repo clone` → 只改需要改的文件 → commit → push。
 
 ```bash
-curl -s -H "Authorization: token $TOKEN" https://api.github.com/user
+gh repo clone oracis/<repo> work && cd work
+# 只动该动的文件，commit 时显式限定路径，别 -A 以免带上无关文件
+git -c core.autocrlf=false commit -m "..." -- <相对路径>
 ```
 
-## 建仓
+## 凭据：`gh auth login`（2026-09-19 起已登录，此前结论已废）
+
+**旧结论作废**：本文档曾写「`gh` CLI 没登录，token 只在 `~/.git-credentials`」。
+2026-09-19 已完成 `gh auth login`（device flow），现状态：
 
 ```bash
-curl -s -X POST -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
-  https://api.github.com/user/repos \
-  -d '{"name":"<repo>","description":"<desc>","private":false,"auto_init":false}'
+gh auth status
+# ✓ Logged in to github.com account oracis (keyring), scopes: gist, read:org, repo
 ```
 
-- `auto_init: false` 很重要——别让 GitHub 先建 README，否则本地 push 要处理 unrelated histories。
-- 建仓前先探活：`curl -o /dev/null -w "%{http_code}" .../repos/oracis/<repo>`，`404` = 还没建。
+**`gh` 不读 git 的 `http.proxy` 配置**，所以任何 `gh` 联网命令前必须显式给代理，
+否则报 `net/http: TLS handshake timeout`：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808
+```
+
+device flow 注意点：
+- `gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key`
+- 必须**长驻后台**跑（前台会被命令超时杀掉），用后台任务方式起。
+- **每次重跑都会换新 code** —— 别把上一轮的 code 发给用户。
+- code 约 15 分钟过期；完成后输出 `✓ Logged in as <user>`。
+
+（`~/.git-credentials` 里的 `gho_` token 仍在，可作为无 gh 环境的兜底。）
 
 ## 推送
 
