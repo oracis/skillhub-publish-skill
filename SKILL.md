@@ -91,7 +91,9 @@ python scripts/waf_bisect.py --repo <skill 目录> --files SKILL.md manifest.yam
 
 ## ClawHub 侧
 
-- `clawhub publish <dir> --slug <s> --version x.y.z --source-repo <github url>`
+- `clawhub publish <dir> --slug <s> --version x.y.z [--source-repo <github url> --source-commit <sha>]`
+- **`--source-repo` / `--source-commit` 是可选的**：两个都不给照样发布成功；
+  只给一个才会报 `--source-repo and --source-commit must be provided together`（要么成对给，要么都不给）。
 - 登录是 device flow（`--no-browser` 打印 `https://clawhub.ai/cli/device?user_code=XXXX`，**15 分钟过期**）。
 - CLI 通路若受本机 shell 环境影响，改用网页 https://clawhub.ai/import 贴 GitHub 仓库地址（审核 1-3 天）。
 - 更新 = 相同 slug + 递增 version 重新 publish。
