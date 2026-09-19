@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.5.0
+version: 1.5.1
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -32,6 +32,20 @@ agent_created: true
 
 > 这一条是本技能与其他发布类技能的核心差别。其他工具只处理 400/409/429，
 > 遇到 566 会误导你去「检查元数据与文件类型」——方向完全错了。
+
+## 铁律二：查不到 ≠ 不存在
+
+判断「某个技能有没有」「上架了没有」之前，**先确认你用的接口能看到什么范围**。
+公开接口天然过滤掉未公开、审核中、已下架的条目 —— 拿它当「是否存在」的判据会得到假阴性。
+
+| 想知道什么 | 用哪个 | 别用哪个 |
+|---|---|---|
+| 这个技能**公开发布**了吗 | `status <slug>`（公开搜索） | — |
+| 我**到底发过哪些**（含测试残留） | `mine`（我的后台） | ❌ 公开搜索查不到 |
+| 某个 slug 归谁 | `status` / 看 `namespace.handle` | — |
+
+之前踩过的具体坑：用公开搜索查自家测试探针，搜不到就判定「已被平台自动清理」，
+实际 18 个条目里 12 个探针都还挂在「我的 Skills」里。**清点自己发了什么，永远用 `mine`。**
 
 ## 标准工作流
 
