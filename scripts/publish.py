@@ -7,7 +7,10 @@
 相比官方 CLI 多做的事：
   * 白名单预过滤：官方 CLI 会把 .gitignore/LICENSE/README 一起传，服务端报
     400「不允许的文件类型」。本脚本按服务端接受范围自动过滤。
-  * 封面图：走独立的 `cover` multipart 字段（不打进包，包内位图会被拒）。
+  * 图标/封面：两步走 —— 先 POST /api/v1/community/skill-icons/upload（字段名 file）
+    拿 iconUrl，再放进 payload.iconUrl 提交（不打进包，包内位图会被拒）。
+    ⚠️ 切勿把图片直接作为 `cover`/`icon` multipart 字段 —— 服务端会**静默忽略**，
+    发布照样返回 201 但 iconAuditStatus 恒为 null（2026-09-19 实测）。
   * 429 限流：指数退避重试（30s 起、翻倍、封顶 600s、最多 7 次）。
   * slug 冲突自愈：409/500「已被占用」时自动追加后缀重试，并回写 SKILL.md。
   * **WAF 566 判定（本脚本独有）**：区分「被腾讯云 WAF 按内容拦」与「业务校验失败」。
@@ -24,7 +27,7 @@
     python publish.py status <slug>                        # 回读线上状态（独有）
     python publish.py status <dir>                         # 传目录则自动比对本地/线上版本
     python publish.py publish <dir> --version 1.3.0 \
-           --changelog "..." [--cover cover.png] [--slug x] [--dry-run] [--force]
+           --changelog "..." [--icon icon.png] [--slug x] [--dry-run] [--force]
     python publish.py compare "<关键词>"                    # 竞品对标（独有）
 
 退出码：0 = 成功，1 = 失败。
@@ -52,6 +55,10 @@ DEFAULT_HOST = "https://api.skillhub.cn"
 PUBLISH_PATH = "/api/v1/community/skills/publish"
 ME_PATH = "/api/v1/auth/me"
 SEARCH_PATH = "/api/v1/search"
+# 图标上传端点（2026-09-19 从前端 bundle 反查 + 实测确认）：
+#   multipart 字段名必须是 `file`，成功返回 {"iconUrl": "...", "objectKey": "..."}
+#   拿到 iconUrl 后放进 payload.iconUrl 才生效；直接传 cover part 无效。
+ICON_UPLOAD_PATH = "/api/v1/community/skill-icons/upload"
 
 # SkillHub 服务端接受的类型（2026-09-19 实测）：
 #   ✅ .md（含 references/*.md）、.yaml/.yml、.py、.json、.txt 等文本
@@ -358,7 +365,7 @@ def collect_bundle(skill_dir, verbose=True):
                 skipped.append((rel, "服务端必拒（不允许的文件类型）"))
                 continue
             if ext in BITMAP_EXTS:
-                skipped.append((rel, "位图：须走 cover 字段单独上传，不能打进包"))
+                skipped.append((rel, "位图：须走 skill-icons/upload 单独上传，不能打进包"))
                 continue
             if not (rel in ALLOWED_FILES or rel.startswith(ALLOWED_PREFIXES) or ext in ALLOWED_EXTS):
                 skipped.append((rel, "类型不在服务端接受范围"))
@@ -375,24 +382,94 @@ def collect_bundle(skill_dir, verbose=True):
     return files
 
 
-def find_cover(skill_dir, explicit=None):
+def find_icon(skill_dir, explicit=None):
+    """找一个候选图标文件。显式传入则优先（相对路径按 skill_dir 解析）。"""
     if explicit:
         p = explicit if os.path.isabs(explicit) else os.path.join(skill_dir, explicit)
         if os.path.exists(p):
             return p
-        print(f"WARN: --cover {explicit} 不存在，跳过", file=sys.stderr)
+        print(f"WARN: --icon {explicit} 不存在，跳过图标上传", file=sys.stderr)
         return None
-    for n in ("cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "icon.png", "icon.jpg"):
+    for n in ("cover.png", "cover.jpg", "cover.jpeg", "cover.webp",
+              "icon.png", "icon.jpg", "icon.jpeg", "icon.webp"):
         cand = os.path.join(skill_dir, n)
         if os.path.exists(cand):
             return cand
     return None
 
 
+ICON_CTYPE = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def upload_icon(host, token, icon_path, timeout=60):
+    """Step A：把图标传到 /api/v1/community/skill-icons/upload，返回 (iconUrl, err)。
+
+    拿到 iconUrl 后必须放进 payload.iconUrl，否则不会生效。
+    """
+    name = os.path.basename(icon_path)
+    ext = os.path.splitext(name)[1].lower()
+    ctype = ICON_CTYPE.get(ext)
+    if not ctype:
+        return None, f"不支持的图标格式 {ext}（支持 png/jpg/jpeg/webp/gif）"
+    data = open(icon_path, "rb").read()
+    if len(data) > 2 * 1024 * 1024:
+        return None, f"图标 {len(data)//1024}KB 超过 2MB 上限"
+
+    boundary = "----skillhubicon" + uuid.uuid4().hex
+    body = bytearray()
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode())
+    body.extend(f"Content-Type: {ctype}\r\n\r\n".encode())
+    body.extend(data)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode())
+
+    req = urllib.request.Request(host.rstrip("/") + ICON_UPLOAD_PATH, data=bytes(body),
+                                 method="POST", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Accept": "application/json",
+        "Origin": "https://skillhub.cn",
+        "Referer": "https://skillhub.cn/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read() or b""
+        except Exception:
+            raw = b""
+        try:
+            detail = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            detail = {"raw": raw.decode("utf-8", "replace")[:300]}
+        return None, f"HTTP {e.code} {json.dumps(detail, ensure_ascii=False)[:300]}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:200]}"
+
+    try:
+        obj = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        return None, f"响应非 JSON：{raw.decode('utf-8', 'replace')[:200]}"
+    url = obj.get("iconUrl")
+    if not url and isinstance(obj.get("data"), dict):
+        url = obj["data"].get("iconUrl")
+    if not url:
+        return None, f"响应里没有 iconUrl：{json.dumps(obj, ensure_ascii=False)[:300]}"
+    return url, None
+
+
 # --------------------------------------------------------------------------- #
 # 上传
 # --------------------------------------------------------------------------- #
-def post_publish(host, token, payload, files, cover_bytes=None, cover_name="cover.png", timeout=120):
+def post_publish(host, token, payload, files, timeout=120):
+    """Step B：提交发布。只 append `payload` 与 `files` 两个 part。
+
+    ⚠️ 实测：额外 append 一个 `cover`/`icon` part 完全无效 —— 服务端静默忽略，
+    返回 201 但 iconAuditStatus 恒为 null。图标必须走 payload.iconUrl（见 upload_icon）。
+    """
     boundary = "----skillhubboundary" + uuid.uuid4().hex
     body = bytearray()
 
@@ -410,11 +487,6 @@ def post_publish(host, token, payload, files, cover_bytes=None, cover_name="cove
     for rel, data in files:
         ctype = "text/markdown" if rel.lower().endswith((".md", ".yaml", ".yml")) else "text/x-python"
         add("files", data, filename=rel, ctype=ctype)
-    if cover_bytes:
-        ext = os.path.splitext(cover_name)[1].lower()
-        ctype = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                 ".webp": "image/webp"}.get(ext, "application/octet-stream")
-        add("cover", cover_bytes, filename=cover_name, ctype=ctype)
     body.extend(f"--{boundary}--\r\n".encode())
 
     url = host.rstrip("/") + PUBLISH_PATH
@@ -502,7 +574,7 @@ def rewrite_slug(md_path, slug):
     return False
 
 
-def publish(skill_dir, version="", changelog="", cover=None, slug_override="",
+def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             dry_run=False, host_override=None, max_retry=7, force=False):
     skill_dir = os.path.abspath(skill_dir)
     md_path = os.path.join(skill_dir, "SKILL.md")
@@ -522,8 +594,7 @@ def publish(skill_dir, version="", changelog="", cover=None, slug_override="",
         print(json.dumps({"success": False, "error": "包里没有 SKILL.md"}, ensure_ascii=False))
         return 1
 
-    cover_path = find_cover(skill_dir, cover)
-    cover_bytes = open(cover_path, "rb").read() if cover_path else None
+    icon_path = find_icon(skill_dir, icon)
 
     if dry_run:
         remote_preview = _safe_fetch_remote(base_slug, host_override)
@@ -531,7 +602,9 @@ def publish(skill_dir, version="", changelog="", cover=None, slug_override="",
             "dryRun": True, "slug": base_slug, "version": ver, "displayName": display,
             "files": [rel for rel, _ in files],
             "totalBytes": sum(len(d) for _, d in files),
-            "cover": os.path.basename(cover_path) if cover_path else None,
+            "icon": os.path.basename(icon_path) if icon_path else None,
+            "iconNote": ("将先 POST " + ICON_UPLOAD_PATH + " 拿 iconUrl 再写入 payload.iconUrl")
+                        if icon_path else "无图标（服务端会按 seed 分配预设图标）",
         }
         if remote_preview:
             rv = remote_preview.get("version")
@@ -573,6 +646,17 @@ def publish(skill_dir, version="", changelog="", cover=None, slug_override="",
         "changelog": changelog or "",
     }
 
+    # ---- 图标：两步走（Step A 上传拿 URL → 写进 payload.iconUrl）----
+    # 只 append cover/icon part 是无效的，必须走这条链路。
+    if icon_path:
+        icon_url, ierr = upload_icon(host, token, icon_path)
+        if icon_url:
+            payload["iconUrl"] = icon_url
+            print(f"  图标已上传：{os.path.basename(icon_path)} → {icon_url}", file=sys.stderr)
+        else:
+            print(f"  WARN 图标上传失败（不阻断发布，将用预设图标）：{ierr}",
+                  file=sys.stderr)
+
     candidates = [base_slug]
     if not base_slug.endswith("-skill"):
         candidates.append(base_slug + "-skill")
@@ -584,8 +668,7 @@ def publish(skill_dir, version="", changelog="", cover=None, slug_override="",
         payload["slug"] = slug
         delay = 30
         for attempt in range(max_retry):
-            last_status, last_body = post_publish(host, token, payload, files, cover_bytes,
-                                                 cover_name=os.path.basename(cover_path) if cover_path else "cover.png")
+            last_status, last_body = post_publish(host, token, payload, files)
             if last_status == 429:
                 ra = last_body.get("retryAfter") or delay
                 try:
@@ -646,7 +729,8 @@ def main():
     pp.add_argument("dir")
     pp.add_argument("--version", default="")
     pp.add_argument("--changelog", default="")
-    pp.add_argument("--cover", default=None)
+    pp.add_argument("--icon", "--cover", dest="icon", default=None,
+                    help="图标/封面图片（png/jpg/webp，≤2MB）。走 skill-icons/upload 上传")
     pp.add_argument("--slug", default="")
     pp.add_argument("--host", default=None)
     pp.add_argument("--dry-run", action="store_true")
@@ -662,7 +746,7 @@ def main():
     if args.cmd == "compare":
         return compare(args.query, args.host, args.limit)
     if args.cmd == "publish":
-        return publish(args.dir, args.version, args.changelog, args.cover,
+        return publish(args.dir, args.version, args.changelog, args.icon,
                        args.slug, args.dry_run, args.host, force=args.force)
     return 1
 

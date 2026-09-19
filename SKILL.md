@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.4.0
+version: 1.4.2
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -62,7 +62,7 @@ python scripts/publish.py validate <skill目录>
 python scripts/publish.py publish <skill目录> --version 1.4.0 --dry-run
 ```
 
-打印将要上传的文件清单、体积、封面识别结果、**被排除的文件及原因**，
+打印将要上传的文件清单、体积、图标识别结果、**被排除的文件及原因**，
 以及**与线上版本的比对结果**（`versionCheck`: OK / SAME / TOO_OLD）。确认无误再真发。
 
 ### Step 4 发布
@@ -154,6 +154,7 @@ GitHub 仓库名、ClawHub `--slug`。
 | `scripts/publish.py` | Step 2-5；日常发布主入口（含 status / compare） |
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
+| `references/icon-upload.md` | 要传图标/封面，或怀疑图标没生效（`iconAuditStatus: null`）时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
 | `references/github-repo.md` | 需要建 GitHub 仓库并推送时 |
 
@@ -163,7 +164,11 @@ GitHub 仓库名、ClawHub `--slug`。
    `.gitignore` / `LICENSE` / `README` 会被拒。别用 GitHub「Download ZIP」（会带上那几个文件）。
 2. **结构**：所有文件放进**一个与 skill 同名的顶层目录**。
 3. **文件名**：`<slug>.zip`（不带版本号）。≤10MB。
-4. **图标**：走表单单独上传，**绝不打进包**（zip 内位图会被拒收）。
+4. **图标**：走表单单独上传，**绝不打进包**（zip 内位图会被拒收）。且**必须两步走**：
+   先 `POST /api/v1/community/skill-icons/upload`（multipart 字段名 **`file`**）拿 `iconUrl`，
+   再放进 `payload.iconUrl` 提交。把图片直接当作 `cover`/`icon` part 会被服务端**静默忽略**
+   —— 发布仍返回 201，但 `iconAuditStatus` 恒为 `null`（`pending` 才是生效）。
+   `publish.py --icon xxx.png` 已封装这条链路，上传失败只告警不阻断发布。
 5. 打包用 zipfile 手打，键名**必须用正斜杠**（`os.path.join` 在 Windows 产生反斜杠会导致 `KeyError`）：
 
 ```python
