@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.4.2
+version: 1.4.3
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -68,11 +68,15 @@ python scripts/publish.py publish <skill目录> --version 1.4.0 --dry-run
 ### Step 4 发布
 
 ```bash
-python scripts/publish.py publish <skill目录> --version 1.3.0 --changelog "变更说明"
+python scripts/publish.py publish <skill目录> --version 1.3.0 --changelog "变更说明" \
+       [--icon icon.png]
 ```
 
-脚本自动完成：白名单过滤 → 封面图走 `cover` 字段 → 429 指数退避 → slug 冲突自愈。
+脚本自动完成：白名单过滤 → 图标两步上传 → 429 指数退避 → slug 冲突自愈。
 成功返回 `skillId` / `versionId` / `slugUsed`；失败会打印**分类结论 + 下一步动作**。
+
+带图标时务必确认响应里 **`iconAuditStatus: "pending"`** —— 若是 `null` 说明图标没收到
+（那通常意味着把图片错当成 multipart part 传了，见上方「图标」注意事项）。
 
 ### Step 5 验证发布结果（不用开浏览器）
 
@@ -192,3 +196,17 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
 - WAF 是累计评分制黑盒，`waf_bisect.py` 给出的是**定位方法**而非稳定规则；
   命中特征会变化，按「二分定位」的思路排查，别背特征表。
 - 预检不是安全审计，不能替代平台安全扫描。
+
+## 元教训：别信文档，信真实请求
+
+本技能里最贵的两个结论（WAF 566 的真身、图标的两步链路）都不是文档里写的，
+而是**打真实请求试出来的**。踩过的坑值得记住：
+
+1. **「接口返回 2xx」不等于「这个字段生效了」**。`cover` part 返回 201，但字段被静默忽略。
+   判断字段是否生效，要看**响应体里对应的状态字段**（如 `iconAuditStatus`），
+   而不是看 HTTP 状态码。
+2. **服务端对不认识的 part 常常静默丢弃**，不报错。所以要靠「换个明显非法的值试试」来
+   反证：如果传一堆垃圾内容它也照收不误，说明它压根没读这个字段。
+3. **平台只有网页、没有 API 文档时**，去前端 bundle 里搜端点名反查真实实现
+   （见 `references/icon-upload.md` 的「反查方法」），比猜字段名快得多。
+4. **官方 CLI 没做的功能，不代表平台没有这个 API** —— 两边是独立的。
