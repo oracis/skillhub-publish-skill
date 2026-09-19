@@ -2,10 +2,10 @@
 name: skillhub-publish-skill
 slug: skillhub-publish-skill
 displayName: SkillHub/ClawHub 技能发布
-summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
+summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
-description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」时使用。
-version: 1.3.0
+description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
+version: 1.4.0
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -59,10 +59,11 @@ python scripts/publish.py validate <skill目录>
 ### Step 3 预演（不上传）
 
 ```bash
-python scripts/publish.py publish <skill目录> --version 1.3.0 --dry-run
+python scripts/publish.py publish <skill目录> --version 1.4.0 --dry-run
 ```
 
-打印将要上传的文件清单、体积、封面识别结果，以及**被排除的文件及原因**。确认无误再真发。
+打印将要上传的文件清单、体积、封面识别结果、**被排除的文件及原因**，
+以及**与线上版本的比对结果**（`versionCheck`: OK / SAME / TOO_OLD）。确认无误再真发。
 
 ### Step 4 发布
 
@@ -73,7 +74,25 @@ python scripts/publish.py publish <skill目录> --version 1.3.0 --changelog "变
 脚本自动完成：白名单过滤 → 封面图走 `cover` 字段 → 429 指数退避 → slug 冲突自愈。
 成功返回 `skillId` / `versionId` / `slugUsed`；失败会打印**分类结论 + 下一步动作**。
 
-### Step 5 ClawHub
+### Step 5 验证发布结果（不用开浏览器）
+
+```bash
+python scripts/publish.py status <skill目录>     # 传目录会自动比对本地/线上版本
+python scripts/publish.py status <slug>          # 只查线上
+```
+
+输出线上版本、下载/安装/收藏数、更新时间，并给出同步状态：
+
+| 同步状态 | 含义 |
+|---|---|
+| `✓ 已同步` | 本地版本 == 线上版本，**审核已通过** |
+| `↑ 本地更新` | 本地版本更高 —— 还没发，或已提交仍在审核中 |
+| `✗ 版本倒挂` | 本地版本 ≤ 线上版本 —— 发上去会被服务端拒 |
+
+> ⚠️ **search 索引有延迟**：刚发布（还在审核）的版本不会立即出现在查询结果里，
+> 可能仍显示上一个线上版本。这是正常的，不是发布失败。
+
+### Step 6 ClawHub
 
 ```bash
 clawhub publish <skill目录> --slug <slug> --version x.y.z
@@ -81,9 +100,43 @@ clawhub publish <skill目录> --slug <slug> --version x.y.z
 
 `--source-repo` / `--source-commit` **成对给或都不给**，只给一个报 `must be provided together`。
 
-### Step 6 GitHub
+### Step 7 GitHub
 
 见 `references/github-repo.md`。本机已有可用凭据，**不需要向用户索要 PAT**。
+
+## 版本递增是硬性要求
+
+服务端要求**更新时 version 必须严格高于线上版本**（相同或更低都会被拒）。
+
+`publish` 命令会在发布前自动比对并拦下，避免白发一次：
+
+```
+{ "success": false, "blockedBy": "version_check",
+  "localVersion": "1.2.9", "remoteVersion": "1.3.0",
+  "error": "版本号 1.2.9 比线上 1.3.0 更低，服务端会拒绝更新",
+  "fix": "把版本号改成高于 1.3.0 的值（如升到 1.3.1），或加 --force 跳过此检查" }
+```
+
+- 首次发布（线上查不到该 slug）会自动跳过检查。
+- 网络异常时降级为提示，**不阻断发布**。
+- 确需绕过：`--force`。
+
+## 竞品对标
+
+```bash
+python scripts/publish.py compare "<关键词>"
+```
+
+按下载量列出同类技能，用客观数据判断投入方向 —— 比凭感觉判断「我们有什么优势」可靠：
+
+```
+关键词「skill 发布」同类技能（按下载量排序）
+版本            下载     安装  技能
+1.2.1           998      26   ClawHub Skill 发布避坑指南  @clawhub_tudoubudou
+1.0.1            83       0   开源发布（GitHub Skill 发布器）  @user_73cb5b59
+```
+
+下载量反映曝光面，安装量反映真实使用。
 
 ## 三平台版本必须一致
 
@@ -98,7 +151,7 @@ GitHub 仓库名、ClawHub `--slug`。
 | 文件 | 什么时候读 |
 |---|---|
 | `scripts/preflight.py` | Step 1；发布前必跑 |
-| `scripts/publish.py` | Step 2-4；日常发布主入口 |
+| `scripts/publish.py` | Step 2-5；日常发布主入口（含 status / compare） |
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
