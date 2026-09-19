@@ -450,6 +450,7 @@ def load_frontmatter(md_path):
 
 
 def validate_skill(skill_dir):
+    skill_dir = normalize_path(skill_dir)
     md = os.path.join(skill_dir, "SKILL.md")
     if not os.path.exists(md):
         print(json.dumps({"valid": False, "error": "SKILL.md 不存在"}, ensure_ascii=False, indent=2))
@@ -477,6 +478,7 @@ def validate_skill(skill_dir):
 # 打包含 / 封面
 # --------------------------------------------------------------------------- #
 def collect_bundle(skill_dir, verbose=True):
+    skill_dir = normalize_path(skill_dir)
     """按服务端接受的类型收集待上传文件，返回 [(rel, bytes)]。"""
     files, skipped = [], []
     for root, dirs, names in os.walk(skill_dir):
@@ -510,16 +512,51 @@ def collect_bundle(skill_dir, verbose=True):
     return files
 
 
+def normalize_path(p):
+    """把 Git Bash / MSYS 风格路径还原成 Windows 路径。
+
+    坑（真实踩过）：在 Git Bash 里 `--icon C:/x/y.png` 会被 MSYS 自动翻译成
+    `/c/x/y.png`，Python 在 Windows 上无法解析，于是「图标静默没上传」——
+    只打一句 WARN 不阻断发布，很容易漏看。这里统一还原。
+    """
+    if not p:
+        return p
+    if os.name != "nt":
+        return p
+    # /c/Users/... -> C:/Users/...
+    m = re.match(r"^/([a-zA-Z])/(.*)$", p)
+    if m:
+        return f"{m.group(1).upper()}:/{m.group(2)}"
+    # MSYS 转义前缀 /c/ 之外的形态，如 //server/share
+    if p.startswith("//"):
+        return p[1:]
+    return p
+
+
 def find_icon(skill_dir, explicit=None):
-    """找一个候选图标文件。显式传入则优先（相对路径按 skill_dir 解析）。"""
+    """找一个候选图标文件。显式传入则优先（相对路径按 skill_dir 解析）。
+
+    找不到时**返回原因**而非静默跳过 —— 图标漏传很难察觉。
+    """
     if explicit:
+        raw = explicit
+        explicit = normalize_path(explicit)
         p = explicit if os.path.isabs(explicit) else os.path.join(skill_dir, explicit)
         if os.path.exists(p):
             return p
-        print(f"WARN: --icon {explicit} 不存在，跳过图标上传", file=sys.stderr)
+        hint = ""
+        if raw != explicit:
+            hint = f"（原始写法 {raw} 是 Git Bash/MSYS 路径，已还原为 {explicit}）"
+        print(f"WARN: --icon {explicit} 不存在，跳过图标上传{hint}", file=sys.stderr)
         return None
     for n in ("cover.png", "cover.jpg", "cover.jpeg", "cover.webp",
               "icon.png", "icon.jpg", "icon.jpeg", "icon.webp"):
+        cand = os.path.join(skill_dir, n)
+        if os.path.exists(cand):
+            return cand
+    # 兜底：<slug>.png / <目录名>.png
+    base = os.path.basename(os.path.abspath(skill_dir))
+    for n in (base + ".png", base + ".jpg", base + ".webp"):
         cand = os.path.join(skill_dir, n)
         if os.path.exists(cand):
             return cand
@@ -704,7 +741,7 @@ def rewrite_slug(md_path, slug):
 
 def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             dry_run=False, host_override=None, max_retry=7, force=False):
-    skill_dir = os.path.abspath(skill_dir)
+    skill_dir = os.path.abspath(normalize_path(skill_dir))
     md_path = os.path.join(skill_dir, "SKILL.md")
     if not os.path.exists(md_path):
         print(json.dumps({"success": False, "error": "SKILL.md 不存在"}, ensure_ascii=False))
@@ -812,10 +849,26 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
         if last_status in (200, 201):
             result = last_body if isinstance(last_body, dict) else {}
             result["slugUsed"] = slug
-            print(json.dumps({"success": True, "result": result}, ensure_ascii=False, indent=2))
-            if slug != str(fm.get("slug") or ""):
+            declared = str(fm.get("slug") or "").strip()
+            # 用了后备 slug 是**重大信号**，必须显眼，别让用户以为发到了原条目上
+            if declared and slug != declared:
+                result["slugRewritten"] = True
+                result["originalSlug"] = declared
+                print(json.dumps({"success": True, "result": result},
+                                 ensure_ascii=False, indent=2))
+                print("!" * 66, file=sys.stderr)
+                print(f"! 注意：slug 已从 '{declared}' 自动改为 '{slug}'（原 slug 被占用）。",
+                      file=sys.stderr)
+                print("! 这意味着内容发到了**另一个条目**，原条目不会更新。", file=sys.stderr)
+                print("! 如果不是你想要的：改回 SKILL.md 里的 slug: 并升版重发，", file=sys.stderr)
+                print("! 再用 `publish.py mine` 检查有无重复条目。详见 references/path-traps.md",
+                      file=sys.stderr)
+                print("!" * 66, file=sys.stderr)
                 if rewrite_slug(md_path, slug):
                     print(f"  已把 slug={slug} 回写进 SKILL.md", file=sys.stderr)
+            else:
+                print(json.dumps({"success": True, "result": result},
+                                 ensure_ascii=False, indent=2))
             return 0
 
         kind, advice = judge_failure(last_status, last_body)

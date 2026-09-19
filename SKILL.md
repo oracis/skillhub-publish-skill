@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.5.1
+version: 1.6.0
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -196,6 +196,7 @@ GitHub 仓库名、ClawHub `--slug`。
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
 | `references/icon-upload.md` | 要传图标/封面，或怀疑图标没生效（`iconAuditStatus: null`）时 |
+| `references/path-traps.md` | 传 `--icon` / 目录路径没生效，或 `slug` 被自动改写时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
 | `references/github-repo.md` | 需要建 GitHub 仓库并推送时 |
 
