@@ -20,6 +20,9 @@
     下载量、更新时间，自动判断审核是否通过 —— 不用再开浏览器看 Dashboard。
   * **版本递增硬卡点（本脚本独有）**：发布前比对「本地版本 vs 线上版本」，
     版本号不递增会被服务端拒绝，本脚本提前拦下并说明原因。
+  * **清点与清理（本脚本独有）**：`mine` 从 /api/v1/dashboard/skills 列出我名下**全部**
+    技能 —— 含审核中、已下架、测试残留（这些在公开搜索里查不到）；
+    `rm` 自动串好「先下架 → 再删除」两步（服务端不允许直接删已上架的）。
 
 用法：
     python publish.py check-login                          # 检查登录态
@@ -29,6 +32,8 @@
     python publish.py publish <dir> --version 1.3.0 \
            --changelog "..." [--icon icon.png] [--slug x] [--dry-run] [--force]
     python publish.py compare "<关键词>"                    # 竞品对标（独有）
+    python publish.py mine                                 # 列出我名下全部技能（独有）
+    python publish.py rm <slug> --yes                      # 先下架再删除（不可恢复）
 
 退出码：0 = 成功，1 = 失败。
 """
@@ -287,6 +292,129 @@ def compare(query, host_override=None, limit=12):
     print("-" * 76)
     print(f"共 {len(items)} 条。下载量反映曝光面，安装量反映真实使用。")
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# 我的技能管理（列出 / 下架 / 删除）
+# --------------------------------------------------------------------------- #
+def _api(host, token, path, method="GET", body=None, timeout=60):
+    """通用 JSON 调用，返回 (status, parsed)。"""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Origin": "https://skillhub.cn",
+        "Referer": "https://skillhub.cn/",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(host.rstrip("/") + path, data=data,
+                                 method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            code = r.getcode()
+    except urllib.error.HTTPError as e:
+        code = e.code
+        try:
+            raw = e.read() or b""
+        except Exception:
+            raw = b""
+    except Exception as e:
+        return "ERR", {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+    try:
+        return code, json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        return code, {"raw": raw.decode("utf-8", "replace")[:300]}
+
+
+def list_mine(host_override=None, as_json=False, page_size=50):
+    """列出**我名下**的全部技能（含审核中/已下架的，这是线上搜索看不到的）。
+
+    ⚠️ 本地 status 走的是公开搜索接口，只能看到已公开的条目；
+    要清点自己发了什么、有没有残留测试条目，必须用这个 dashboard 接口。
+    """
+    creds, err = load_creds(host_override)
+    if not creds:
+        print(json.dumps({"ok": False, "error": err}, ensure_ascii=False, indent=2))
+        return 1
+    token, host = creds
+    code, body = _api(host, token, f"/api/v1/dashboard/skills?page=1&pageSize={page_size}")
+    if code != 200:
+        print(json.dumps({"ok": False, "status": code, "body": body},
+                         ensure_ascii=False, indent=2))
+        return 1
+    skills = body.get("skills") or []
+    if as_json:
+        print(json.dumps({"ok": True, "total": body.get("total"), "skills": [
+            {"slug": s.get("slug"), "name": s.get("name"), "version": s.get("version"),
+             "status": s.get("status"), "reviewStatus": s.get("reviewStatus"),
+             "downloads": s.get("downloads"), "installs": s.get("installs"),
+             "iconUrl": s.get("iconUrl"), "updatedAt": s.get("updatedAt")}
+            for s in skills]}, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"我发布的技能（共 {body.get('total', len(skills))} 个）")
+    print("=" * 82)
+    print(f"{'slug':<32}{'版本':<10}{'状态':<12}{'下载':>6}{'图标':>6}")
+    print("-" * 82)
+    for s in skills:
+        slug = str(s.get("slug") or "")[:31]
+        ver = str(s.get("version") or "-")[:9]
+        st = str(s.get("status") or "-")[:11]
+        dl = s.get("downloads") or 0
+        has_icon = "有" if s.get("iconUrl") else "无"
+        print(f"{slug:<32}{ver:<10}{st:<12}{dl:>6}{has_icon:>6}")
+    print("-" * 82)
+    print("提示：`unlist` 从市场隐藏但保留条目；`rm` 会**先下架再永久删除**，不可恢复。")
+    return 0
+
+
+def rm_skill(slug, host_override=None, yes=False):
+    """删除一个技能。服务端要求**先下架再删除**，本函数自动完成两步。
+
+    删除不可恢复，默认需要 --yes 确认。
+    """
+    if not SLUG_RE.match(str(slug or "")):
+        print(json.dumps({"ok": False, "error": f"slug 非法：{slug}"}, ensure_ascii=False))
+        return 1
+    if not yes:
+        print(json.dumps({
+            "ok": False, "slug": slug, "needsConfirm": True,
+            "warning": "删除不可恢复：会先下架（从市场隐藏）再永久删除该技能及其全部版本。",
+            "fix": f"确认要删就加 --yes：python publish.py rm {slug} --yes",
+        }, ensure_ascii=False, indent=2))
+        return 1
+
+    creds, err = load_creds(host_override)
+    if not creds:
+        print(json.dumps({"ok": False, "error": err}, ensure_ascii=False, indent=2))
+        return 1
+    token, host = creds
+
+    # Step 1: 下架（若已下架会返回非 200，直接忽略继续尝试删除）
+    ucode, ubody = _api(host, token,
+                        f"/api/v1/community/skills/{urllib.parse.quote(slug)}/unlist",
+                        method="POST", body={})
+    # Step 2: 删除
+    dcode, dbody = _api(host, token,
+                        f"/api/v1/community/skills/{urllib.parse.quote(slug)}",
+                        method="DELETE")
+
+    if dcode == 200 and (isinstance(dbody, dict) and dbody.get("deleted")):
+        print(json.dumps({"ok": True, "slug": slug, "unlisted": ucode == 200,
+                          "deleted": True, "message": f"已删除 {slug}"},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    msg = json.dumps(dbody, ensure_ascii=False)[:300]
+    hint = ""
+    if "只能删除已下架的" in msg:
+        hint = "（下架那步失败了，可能权限不足或 slug 不属于你）"
+    print(json.dumps({"ok": False, "slug": slug, "unlistStatus": ucode,
+                      "unlistBody": ubody, "deleteStatus": dcode, "deleteBody": dbody,
+                      "error": f"删除失败{hint}"}, ensure_ascii=False, indent=2))
+    return 1
 
 
 # --------------------------------------------------------------------------- #
@@ -707,7 +835,8 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
 
 
 def main():
-    ap = argparse.ArgumentParser(description="SkillHub 发布器（含 WAF 566 定位、状态回读、版本卡点）")
+    ap = argparse.ArgumentParser(
+        description="SkillHub 发布器（含 WAF 566 定位、状态回读、版本卡点、清点清理）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("check-login", help="检查登录态").add_argument("--host", default=None)
@@ -736,6 +865,15 @@ def main():
     pp.add_argument("--dry-run", action="store_true")
     pp.add_argument("--force", action="store_true", help="跳过版本递增检查")
 
+    pm = sub.add_parser("mine", help="列出我名下全部技能（含审核中/已下架，搜索看不到的）")
+    pm.add_argument("--host", default=None)
+    pm.add_argument("--json", dest="as_json", action="store_true")
+
+    pr = sub.add_parser("rm", help="删除技能（自动先下架再删除，不可恢复）")
+    pr.add_argument("slug")
+    pr.add_argument("--host", default=None)
+    pr.add_argument("--yes", action="store_true", help="确认删除，跳过二次确认提示")
+
     args = ap.parse_args()
     if args.cmd == "check-login":
         return check_login(args.host)
@@ -745,6 +883,10 @@ def main():
         return status(args.target, args.host, args.as_json)
     if args.cmd == "compare":
         return compare(args.query, args.host, args.limit)
+    if args.cmd == "mine":
+        return list_mine(args.host, args.as_json)
+    if args.cmd == "rm":
+        return rm_skill(args.slug, args.host, args.yes)
     if args.cmd == "publish":
         return publish(args.dir, args.version, args.changelog, args.icon,
                        args.slug, args.dry_run, args.host, force=args.force)

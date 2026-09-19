@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.4.3
+version: 1.5.0
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -95,8 +95,31 @@ python scripts/publish.py status <slug>          # 只查线上
 
 > ⚠️ **search 索引有延迟**：刚发布（还在审核）的版本不会立即出现在查询结果里，
 > 可能仍显示上一个线上版本。这是正常的，不是发布失败。
+>
+> ⚠️ **`status` 走的是公开搜索接口，看不到未公开条目**。要清点「我到底发过什么」
+> （含审核中、已下架、测试残留），用 `mine` 命令 —— 那是另一个接口（`/api/v1/dashboard/skills`）。
 
-### Step 6 ClawHub
+### Step 6 清点与清理自己的技能
+
+```bash
+python scripts/publish.py mine                 # 列出我名下全部技能（含线上搜索看不到的）
+python scripts/publish.py mine --json          # 机器可读
+python scripts/publish.py rm <slug>            # 只提示，不执行（安全护栏）
+python scripts/publish.py rm <slug> --yes      # 确认删除：自动「先下架 → 再删除」
+```
+
+**`mine` 与 `status` 的区别**（踩过坑，别搞混）：
+
+| 命令 | 数据源 | 看得到什么 |
+|---|---|---|
+| `status <slug>` | 公开搜索 `/api/v1/search` | 只有**已公开**条目；未过审/已下架的查不到 |
+| `mine` | 我的后台 `/api/v1/dashboard/skills` | **我发的全部**：审核中、已下架、测试残留都在 |
+
+**删除是两步**（服务端强制）：直接 `DELETE` 会返回 `409 只能删除已下架的 Skill，请先下架`。
+`rm` 已自动串好 `/unlist` → `DELETE`，并对「已下架再删」的重复调用做了容错。
+删除**不可恢复**，所以默认不给 `--yes` 就只打印风险提示、不执行。
+
+### Step 7 ClawHub
 
 ```bash
 clawhub publish <skill目录> --slug <slug> --version x.y.z
@@ -104,7 +127,7 @@ clawhub publish <skill目录> --slug <slug> --version x.y.z
 
 `--source-repo` / `--source-commit` **成对给或都不给**，只给一个报 `must be provided together`。
 
-### Step 7 GitHub
+### Step 8 GitHub
 
 见 `references/github-repo.md`。本机已有可用凭据，**不需要向用户索要 PAT**。
 
@@ -155,7 +178,7 @@ GitHub 仓库名、ClawHub `--slug`。
 | 文件 | 什么时候读 |
 |---|---|
 | `scripts/preflight.py` | Step 1；发布前必跑 |
-| `scripts/publish.py` | Step 2-5；日常发布主入口（含 status / compare） |
+| `scripts/publish.py` | Step 2-6；日常发布主入口（含 status / compare / mine / rm） |
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
 | `references/icon-upload.md` | 要传图标/封面，或怀疑图标没生效（`iconAuditStatus: null`）时 |
