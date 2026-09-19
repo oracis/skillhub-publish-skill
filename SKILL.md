@@ -5,8 +5,9 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.6.2
-category: 开发编程
+version: 1.7.0
+category: dev-programming
+subCategories: [dev-script, dev-git]
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
 ---
@@ -83,14 +84,26 @@ python scripts/publish.py publish <skill目录> --version 1.4.0 --dry-run
 
 ```bash
 python scripts/publish.py publish <skill目录> --version 1.3.0 --changelog "变更说明" \
-       [--icon icon.png]
+       [--icon icon.png] [--category dev-programming] [--subcategory dev-script]
 ```
 
-脚本自动完成：白名单过滤 → 图标两步上传 → 429 指数退避 → slug 冲突自愈。
-成功返回 `skillId` / `versionId` / `slugUsed`；失败会打印**分类结论 + 下一步动作**。
+脚本自动完成：白名单过滤 → 图标两步上传 → 分类 key 校验 → 429 指数退避 → slug 冲突自愈。
+成功返回 `skillId` / `versionId` / `slugUsed` / `category` / `subCategories`；
+失败会打印**分类结论 + 下一步动作**。
+
+**分类建议写进 SKILL.md frontmatter**（比分次传参可靠，下次发版自动带上）：
+
+```yaml
+category: dev-programming
+subCategories: [dev-script, dev-code-gen]
+```
+
+不填分类的话平台会显示「未分类」——**注意「选填」不等于可以不管**，
+市场里未分类的条目曝光会明显吃亏。可选值用 `publish.py categories` 查。
 
 带图标时务必确认响应里 **`iconAuditStatus: "pending"`** —— 若是 `null` 说明图标没收到
 （那通常意味着把图片错当成 multipart part 传了，见上方「图标」注意事项）。
+分类则看响应里有没有回显 `category` 字段。
 
 ### Step 5 验证发布结果（不用开浏览器）
 
@@ -192,10 +205,11 @@ GitHub 仓库名、ClawHub `--slug`。
 | 文件 | 什么时候读 |
 |---|---|
 | `scripts/preflight.py` | Step 1；发布前必跑 |
-| `scripts/publish.py` | Step 2-6；日常发布主入口（含 status / compare / mine / rm） |
+| `scripts/publish.py` | Step 2-6；日常发布主入口（含 status / compare / mine / rm / categories） |
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
 | `references/icon-upload.md` | 要传图标/封面，或怀疑图标没生效（`iconAuditStatus: null`）时 |
+| `references/categories.md` | 要填/补分类，或后台显示「未分类」时 |
 | `references/path-traps.md` | 传 `--icon` / 目录路径没生效，或 `slug` 被自动改写时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
 | `references/github-repo.md` | 需要建 GitHub 仓库并推送时 |

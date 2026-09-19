@@ -1,6 +1,6 @@
 # Windows / Git Bash 路径与 slug 陷阱
 
-这两个坑都会**静默失败**（发布成功、但你要的效果没发生），且都在本机真实踩过。
+这几个坑都会**静默失败**（发布成功、但你要的效果没发生），且都在本机真实踩过。
 
 ## 坑 1：Git Bash 把 `C:/...` 改写成 `/c/...`
 
@@ -94,3 +94,84 @@ displayName: 某技能
 ```
 
 平台只认一个展示名，嵌套形式的 `en` 本来也不会被用到。
+
+## 坑 3：图标文件不在技能目录里 → `iconAuditStatus: null`
+
+### 现象
+
+```bash
+python publish.py publish ./skillhub-publish-skill     # 返回 success: true
+# 但响应里 "iconAuditStatus": null                     ← 图标根本没提交
+```
+
+**且 stdout 里连 WARN 都没有**（因为 `--icon` 没传，`find_icon()` 走的是自动兜底，
+一个候选都没找到就静默返回 None）。
+
+### 根因
+
+`find_icon()` 的查找顺序是：
+
+1. `--icon` 显式指定
+2. `cover.png/jpg/webp`、`icon.png/jpg/webp`
+3. `<目录名>.png/jpg/webp`（本技能新增的兜底）
+
+第 3 条要求**图标文件名严格等于技能目录名**。此前图标是临时生成在别处、
+`--icon` 指过去传的，**文件从没落进技能目录** → 下次不带 `--icon` 发版，
+图标就丢了，而且完全无声。
+
+### 判据
+
+- 发布响应 `iconAuditStatus` 为 `null` → 没提交（见坑 1 判据）
+- `ls <技能目录>/*.png` 为空 → 根因在此
+
+### 处置 / 预防
+
+**把 `<slug>.png` 常驻放在技能目录根部**，之后每次发版都会自动带上：
+
+```bash
+python ~/.workbuddy/skills/zero-dep-icon-gen/scripts/gen_icons.py \
+    --spec "my-skill:#4F46E5,#818CF8,browser" -o my-skill/
+```
+
+包里不会因此变大 —— 位图在 `collect_bundle()` 阶段已被排除
+（服务端拒收位图，必须走 `skill-icons/upload` 单独上传），它只是本地素材。
+
+## 坑 4：`git push origin master` 报 `src refspec does not match any`
+
+### 现象
+
+```bash
+git push origin master
+# error: src refspec master does not match any
+```
+
+或：
+
+```bash
+git status -sb
+# ## main...origin/main [gone]      ← 上游引用"消失"了
+```
+
+### 根因
+
+新建仓库时 GitHub 默认分支是 **`main`**，但命令行习惯容易写成 `master`。
+第二种 `[gone]` 出现在**远程分支被改过名**、或本地 remote 缓存失效时；
+此时 `git push` 不带 refspec 也会报 `no upstream`。
+
+### 处置
+
+```bash
+# 1. 先问远程到底有什么分支，别猜
+git ls-remote origin | head
+
+# 2. 按实际分支名推
+git push origin main
+
+# 3. 若 upstream 丢了，重新绑定
+git push -u origin main        # 重新设置 upstream 并推
+# 或
+git branch --set-upstream-to=origin/main main
+```
+
+**别直接 `git push --force`** —— 先 `git ls-remote` 看清远程状态，
+本机就曾因盲目强推差点覆盖别人（或自己早先）的提交。

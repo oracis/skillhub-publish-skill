@@ -64,6 +64,36 @@ SEARCH_PATH = "/api/v1/search"
 #   multipart 字段名必须是 `file`，成功返回 {"iconUrl": "...", "objectKey": "..."}
 #   拿到 iconUrl 后放进 payload.iconUrl 才生效；直接传 cover part 无效。
 ICON_UPLOAD_PATH = "/api/v1/community/skill-icons/upload"
+# 分类数据端点（2026-09-19 从前端 bundle 反查 + 实测）：
+#   GET /api/v1/categories   -> {count, items:[{key, level, name, nameEn, sortOrder, active}]}
+#   GET /api/v1/subcategories-> {count, items:[{key, parentKey, name, ...}]}
+CATEGORIES_PATH = "/api/v1/categories"
+SUBCATEGORIES_PATH = "/api/v1/subcategories"
+
+# 分类字段（从前端 buildPayload 反查）：
+#   category      一级分类的 key（单数字符串，可为空串）
+#   subCategories 二级分类 key 数组，**最多 3 个**
+# 两者都是「选填」，前端的逻辑是：category 为空时**完全不传**这两个字段
+# （而不是传空串）。这就是「未分类」的由来 —— 不传 = 平台存空。
+MAX_SUBCATEGORIES = 3
+
+# 一级分类兜底表（仅当 /api/v1/categories 取不到时用；实测 13 个）。
+# 以接口返回为准，这里只是断网/未登录时的参考。
+FALLBACK_CATEGORIES = {
+    "pay-skill": "Pay Skill",
+    "office-efficiency": "办公效率",
+    "content-creation": "内容创作",
+    "dev-programming": "开发编程",
+    "data-analysis": "数据分析",
+    "design-media": "设计多媒体",
+    "ai-agent": "AI Agent",
+    "knowledge-management": "知识管理",
+    "business-ops": "商业运营",
+    "education": "教育学习",
+    "professional": "行业专业",
+    "it-ops-security": "IT 运维与安全",
+    "life-service": "生活服务",
+}
 
 # SkillHub 服务端接受的类型（2026-09-19 实测）：
 #   ✅ .md（含 references/*.md）、.yaml/.yml、.py、.json、.txt 等文本
@@ -328,6 +358,110 @@ def _api(host, token, path, method="GET", body=None, timeout=60):
         return code, {"raw": raw.decode("utf-8", "replace")[:300]}
 
 
+def fetch_taxonomy(host=DEFAULT_HOST, token=None):
+    """拉取平台分类体系，返回 (categories, subcategories_by_parent, err)。
+
+    分类数据是**公开端点**（不带 token 也能拿），所以未登录也能查询。
+    """
+    st_c, cat = _api(host, token or "", CATEGORIES_PATH)
+    if st_c != 200:
+        return {}, {}, f"categories 拉取失败 HTTP {st_c}: {cat}"
+    st_s, sub = _api(host, token or "", SUBCATEGORIES_PATH)
+    if st_s != 200:
+        return {}, {}, f"subcategories 拉取失败 HTTP {st_s}: {sub}"
+    cats = {it["key"]: it.get("name") or it["key"] for it in cat.get("items", [])}
+    by_parent = {}
+    for it in sub.get("items", []):
+        by_parent.setdefault(it.get("parentKey") or "", []).append(
+            (it["key"], it.get("name") or it["key"]))
+    return cats, by_parent, None
+
+
+def resolve_category(host, token, category, subcategories=None):
+    """校验 category / subCategories 是否为平台已知的 key。
+
+    返回 (category, sub_list, warnings)。**不合法的一律剔除并给出警告**，
+    而不是直接把错值发上去 —— 平台对未知 key 是静默接受还是报错未知，
+    剔除更安全，也让用户看到自己写错了。
+    """
+    warnings = []
+    cats, by_parent, err = fetch_taxonomy(host, token)
+    subs = list(subcategories or [])
+
+    if err:
+        warnings.append(f"{err}（跳过 key 校验，按原样提交）")
+        return category or "", subs[:MAX_SUBCATEGORIES], warnings
+
+    if category:
+        if category not in cats:
+            warnings.append(
+                f"category '{category}' 不是有效的平台分类 key，已忽略。"
+                f" 可用值见 `publish.py categories`")
+            category = ""
+        elif subs:
+            valid = {k for k, _ in by_parent.get(category, [])}
+            bad = [s for s in subs if s not in valid]
+            if bad:
+                warnings.append(
+                    f"subCategories {bad} 不属于一级分类 '{category}'，已剔除")
+            subs = [s for s in subs if s in valid]
+
+    if len(subs) > MAX_SUBCATEGORIES:
+        warnings.append(f"二级分类最多 {MAX_SUBCATEGORIES} 个，已截断（丢弃 "
+                        f"{subs[MAX_SUBCATEGORIES:]}）")
+        subs = subs[:MAX_SUBCATEGORIES]
+
+    # 去重保序
+    seen, uniq = set(), []
+    for s in subs:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return category or "", uniq, warnings
+
+
+def categories_cmd(host_override=None, as_json=False, parent=None):
+    """列出平台全部分类（一级 + 二级），供挑选 category / subCategories 用。"""
+    host = host_override or DEFAULT_HOST
+    creds, _ = load_creds(host_override)
+    token = creds[0] if creds else None
+    cats, by_parent, err = fetch_taxonomy(host, token)
+    if err:
+        print(json.dumps({"success": False, "error": err}, ensure_ascii=False, indent=2))
+        return 1
+    if as_json:
+        print(json.dumps({"categories": cats,
+                          "subcategories": {k: v for k, v in by_parent.items()}},
+                         ensure_ascii=False, indent=2))
+        return 0
+    if parent:
+        if parent not in cats:
+            print(f"未知的一级分类 key: {parent}", file=sys.stderr)
+            return 1
+        print(f"{parent}  ({cats[parent]}) 下的二级分类：")
+        for k, n in by_parent.get(parent, []):
+            print(f"  {k:<34}{n}")
+        return 0
+    print(f"一级分类（共 {len(cats)}）—— 用 `category` 字段传 key，单选")
+    print("-" * 60)
+    for k, n in cats.items():
+        print(f"  {k:<34}{n}")
+    print()
+    total = sum(len(v) for v in by_parent.values())
+    print(f"二级分类（共 {total}）—— 用 `subCategories` 字段传 key 数组，最多 "
+          f"{MAX_SUBCATEGORIES} 个，且必须属于所选一级分类")
+    print("-" * 60)
+    for pk, items in sorted(by_parent.items()):
+        print(f"  [{pk}] {cats.get(pk, pk)}")
+        for k, n in items:
+            print(f"      {k:<32}{n}")
+    print()
+    print("用法示例：")
+    print("  publish.py publish ./my-skill --category dev-programming "
+          "--subcategory dev-script --subcategory dev-code-gen")
+    return 0
+
+
 def list_mine(host_override=None, as_json=False, page_size=50):
     """列出**我名下**的全部技能（含审核中/已下架的，这是线上搜索看不到的）。
 
@@ -345,28 +479,35 @@ def list_mine(host_override=None, as_json=False, page_size=50):
                          ensure_ascii=False, indent=2))
         return 1
     skills = body.get("skills") or []
+    # 分类名映射（dashboard 只回 key，展示要用中文名）
+    cats, _, _ = fetch_taxonomy(host, token)
     if as_json:
         print(json.dumps({"ok": True, "total": body.get("total"), "skills": [
             {"slug": s.get("slug"), "name": s.get("name"), "version": s.get("version"),
              "status": s.get("status"), "reviewStatus": s.get("reviewStatus"),
              "downloads": s.get("downloads"), "installs": s.get("installs"),
-             "iconUrl": s.get("iconUrl"), "updatedAt": s.get("updatedAt")}
+             "iconUrl": s.get("iconUrl"), "category": s.get("category"),
+             "subCategories": s.get("subCategories"), "updatedAt": s.get("updatedAt")}
             for s in skills]}, ensure_ascii=False, indent=2))
         return 0
 
     print(f"我发布的技能（共 {body.get('total', len(skills))} 个）")
-    print("=" * 82)
-    print(f"{'slug':<32}{'版本':<10}{'状态':<12}{'下载':>6}{'图标':>6}")
-    print("-" * 82)
+    print("=" * 100)
+    print(f"{'slug':<32}{'版本':<10}{'状态':<12}{'下载':>6}{'图标':>6}  分类")
+    print("-" * 100)
     for s in skills:
         slug = str(s.get("slug") or "")[:31]
         ver = str(s.get("version") or "-")[:9]
         st = str(s.get("status") or "-")[:11]
         dl = s.get("downloads") or 0
         has_icon = "有" if s.get("iconUrl") else "无"
-        print(f"{slug:<32}{ver:<10}{st:<12}{dl:>6}{has_icon:>6}")
-    print("-" * 82)
+        cat = s.get("category") or ""
+        cat_disp = cats.get(cat, cat) if cat else "未分类"
+        print(f"{slug:<32}{ver:<10}{st:<12}{dl:>6}{has_icon:>6}  {cat_disp}")
+    print("-" * 100)
     print("提示：`unlist` 从市场隐藏但保留条目；`rm` 会**先下架再永久删除**，不可恢复。")
+    print("      分类为「未分类」的用 `publish.py publish <目录> --category <key>` 补，"
+          "可选值见 `publish.py categories`。")
     return 0
 
 
@@ -740,7 +881,8 @@ def rewrite_slug(md_path, slug):
 
 
 def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
-            dry_run=False, host_override=None, max_retry=7, force=False):
+            dry_run=False, host_override=None, max_retry=7, force=False,
+            category=None, subcategories=None):
     skill_dir = os.path.abspath(normalize_path(skill_dir))
     md_path = os.path.join(skill_dir, "SKILL.md")
     if not os.path.exists(md_path):
@@ -754,6 +896,22 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
     ver = version or str(fm.get("version") or "1.0.0")
     display = str(fm.get("displayName") or fm.get("name") or os.path.basename(skill_dir))
 
+    # 分类：CLI 参数 > frontmatter > 不传（不传 = 平台显示「未分类」）
+    # frontmatter 支持 `category: dev-programming` 与
+    # `subCategories: [dev-script, dev-code-gen]`（逗号分隔字符串也接受）。
+    cat = category if category is not None else fm.get("category")
+    subs = subcategories
+    if subs is None:
+        raw_sub = fm.get("subCategories") or fm.get("subcategories")
+        if isinstance(raw_sub, str):
+            subs = [s.strip() for s in raw_sub.strip("[]").split(",") if s.strip()]
+        elif isinstance(raw_sub, list):
+            subs = [str(s).strip() for s in raw_sub if str(s).strip()]
+        else:
+            subs = []
+    cat = (cat or "").strip()
+    subs = [str(s).strip() for s in (subs or []) if str(s).strip()]
+
     files = collect_bundle(skill_dir)
     if not any(rel == "SKILL.md" for rel, _ in files):
         print(json.dumps({"success": False, "error": "包里没有 SKILL.md"}, ensure_ascii=False))
@@ -763,6 +921,8 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
 
     if dry_run:
         remote_preview = _safe_fetch_remote(base_slug, host_override)
+        # 分类校验要等凭据加载后才能做（fetch_taxonomy 需要 host），
+        # 所以这里只做「语法层面」的展示，真正的 key 校验在下方凭据之后。
         out = {
             "dryRun": True, "slug": base_slug, "version": ver, "displayName": display,
             "files": [rel for rel, _ in files],
@@ -770,6 +930,11 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             "icon": os.path.basename(icon_path) if icon_path else None,
             "iconNote": ("将先 POST " + ICON_UPLOAD_PATH + " 拿 iconUrl 再写入 payload.iconUrl")
                         if icon_path else "无图标（服务端会按 seed 分配预设图标）",
+            "category": cat or None,
+            "subCategories": subs or None,
+            "categoryNote": ("将提交 category + subCategories（下方会做 key 校验）" if cat
+                             else "未指定分类 —— 平台会显示「未分类」。"
+                                  "用 --category 指定，可选值见 `publish.py categories`"),
         }
         if remote_preview:
             rv = remote_preview.get("version")
@@ -777,6 +942,23 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             out["versionCheck"] = "OK" if ver_newer(ver, rv) else (
                 "SAME" if str(ver) == str(rv) else "TOO_OLD")
         print(json.dumps(out, ensure_ascii=False, indent=2))
+        if not cat:
+            print("\n提示：未指定 --category，平台会显示「未分类」。", file=sys.stderr)
+        else:
+            # 凭据齐全时顺手校验一次，让 dry-run 就能暴露写错的 key
+            dcreds, _ = load_creds(host_override)
+            if dcreds:
+                dtoken, dhost = dcreds
+                d_cat, d_subs, d_warns = resolve_category(dhost, dtoken, cat, subs)
+                if d_warns:
+                    for w in d_warns:
+                        print(f"  分类校验 WARN：{w}", file=sys.stderr)
+                if d_cat:
+                    print(f"  分类校验通过：{d_cat}"
+                          + (f" + {d_subs}" if d_subs else ""), file=sys.stderr)
+                else:
+                    print("  分类校验失败：category 无效，实际不会提交分类", file=sys.stderr)
+        return 0
         return 0
 
     creds, err = load_creds(host_override)
@@ -810,6 +992,26 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
         "summaryZh": str(fm.get("summary") or fm.get("description") or "")[:500],
         "changelog": changelog or "",
     }
+
+    # ---- 分类：category（单选 key）+ subCategories（key 数组，≤3）----
+    # 关键：**为空时不要传这两个字段**（前端的做法），传空串反而可能被存成脏值。
+    if cat:
+        cat, subs, cat_warns = resolve_category(host, token, cat, subs)
+        for w in cat_warns:
+            print(f"  WARN 分类校验：{w}", file=sys.stderr)
+        if cat:
+            payload["category"] = cat
+            if subs:
+                payload["subCategories"] = subs
+            cat_desc = FALLBACK_CATEGORIES.get(cat, cat)
+            print(f"  分类已提交：{cat}（{cat_desc}）"
+                  + (f" + {subs}" if subs else "（无二级标签）"), file=sys.stderr)
+        else:
+            print("  WARN 分类无效，本次不提交分类（平台将显示「未分类」）", file=sys.stderr)
+    else:
+        print("  分类未指定：平台将显示「未分类」。"
+              "可用 `publish.py categories` 查看可选值，再传 --category",
+              file=sys.stderr)
 
     # ---- 图标：两步走（Step A 上传拿 URL → 写进 payload.iconUrl）----
     # 只 append cover/icon part 是无效的，必须走这条链路。
@@ -917,10 +1119,21 @@ def main():
     pp.add_argument("--host", default=None)
     pp.add_argument("--dry-run", action="store_true")
     pp.add_argument("--force", action="store_true", help="跳过版本递增检查")
+    pp.add_argument("--category", default=None,
+                    help="一级分类 key（单选）。不传则平台显示「未分类」。"
+                         "可选值见 `publish.py categories`。也可写在 SKILL.md 的 category: 字段")
+    pp.add_argument("--subcategory", dest="subcategory", action="append", default=None,
+                    help=f"二级分类 key，最多 {MAX_SUBCATEGORIES} 个，可重复传。"
+                         "必须属于所选一级分类。也可写在 SKILL.md 的 subCategories: 字段")
 
     pm = sub.add_parser("mine", help="列出我名下全部技能（含审核中/已下架，搜索看不到的）")
     pm.add_argument("--host", default=None)
     pm.add_argument("--json", dest="as_json", action="store_true")
+
+    pk = sub.add_parser("categories", help="列出平台分类体系（挑 category / subCategories 用）")
+    pk.add_argument("--host", default=None)
+    pk.add_argument("--json", dest="as_json", action="store_true")
+    pk.add_argument("--parent", default=None, help="只看某个一级分类下的二级分类")
 
     pr = sub.add_parser("rm", help="删除技能（自动先下架再删除，不可恢复）")
     pr.add_argument("slug")
@@ -940,9 +1153,12 @@ def main():
         return list_mine(args.host, args.as_json)
     if args.cmd == "rm":
         return rm_skill(args.slug, args.host, args.yes)
+    if args.cmd == "categories":
+        return categories_cmd(args.host, args.as_json, args.parent)
     if args.cmd == "publish":
         return publish(args.dir, args.version, args.changelog, args.icon,
-                       args.slug, args.dry_run, args.host, force=args.force)
+                       args.slug, args.dry_run, args.host, force=args.force,
+                       category=args.category, subcategories=args.subcategory)
     return 1
 
 
