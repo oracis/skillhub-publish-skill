@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.6.0
+version: 1.6.2
 category: 开发编程
 platforms: [WorkBuddy, Claude Code, Codex]
 agent_created: true
@@ -199,6 +199,19 @@ GitHub 仓库名、ClawHub `--slug`。
 | `references/path-traps.md` | 传 `--icon` / 目录路径没生效，或 `slug` 被自动改写时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
 | `references/github-repo.md` | 需要建 GitHub 仓库并推送时 |
+
+**手头没有现成图标？** 用 `zero-dep-icon-gen` 技能本地生成
+（零依赖手写 PNG，不装 Pillow，一条命令出图）：
+
+```bash
+PY="C:/Users/DELL/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+$PY ~/.workbuddy/skills/zero-dep-icon-gen/scripts/gen_icons.py \
+    --spec "my-skill:#4F46E5,#818CF8,browser" -o my-skill/
+# 生成 my-skill/my-skill.png，文件名 = slug，find_icon() 会自动兜底找到
+```
+
+可用符号：`browser` `cloud` `shield` `folder` `check` `download`
+`arrow-up` `gear` `search` `lock` `text`（点阵文字）。`--list-symbols` 看全量。
 
 ## 打包规范（手工打包时必看）
 
