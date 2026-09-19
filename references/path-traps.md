@@ -175,3 +175,49 @@ git branch --set-upstream-to=origin/main main
 
 **别直接 `git push --force`** —— 先 `git ls-remote` 看清远程状态，
 本机就曾因盲目强推差点覆盖别人（或自己早先）的提交。
+
+## 坑 5：同名 GitHub 仓库可能**不是**扁平技能仓库
+
+### 现象
+
+想给技能目录加 git 并推到 `oracis/<slug>`，`git push` 报非快进；
+或者 `git status` 里出现一堆莫名其妙的 `D README.md` / `D install.sh` / `D dist/`。
+
+### 根因
+
+同一个 slug 对应的 GitHub 仓库有两种截然不同的布局：
+
+| 类型 | 布局 | 例子 |
+|---|---|---|
+| **扁平技能仓库** | 仓库根 = 技能目录（`SKILL.md` / `scripts/` / 图标） | `oracis/zero-dep-icon-gen` |
+| **完整项目仓库** | 根有 `README.md` / `LICENSE` / `install.*` / `dist/`，**技能本体在子目录** `<slug>/` | `oracis/wechat-file-organizer` |
+
+按扁平结构强推完整项目仓库，会**删掉 README、安装脚本、dist 包**。
+
+### 判据
+
+```bash
+gh repo view <owner>/<repo>          # 先看仓库是否存在
+git clone <repo> && ls -la           # 看根目录到底是技能本体还是项目脚手架
+```
+
+**永远不要跳过这两步就动手。**
+
+### 处置
+
+```bash
+git clone <repo> _clone          # 1. 先 clone 看清结构
+cd _clone
+# 2. 确认远程版本 vs 本地版本，**以更新的那个为准**
+#    （曾踩：本地从市场下载包解出的是 2.0.x，远程已是 2.1.0，多了一个 i18n.py）
+# 3. 只改需要改的文件（如补 frontmatter 字段），别动布局
+git diff --stat                  # 4. 确认改动范围符合预期
+git add -A && git commit && git push
+```
+
+### 反模式：在技能目录里 `git init`
+
+试过在 `~/.workbuddy/skills/<slug>/` 里 `git init` + `fetch` + `reset --soft`，
+结果把远程的 README/install/dist 全标成 `D`（deleted）—— 扁平目录与项目布局
+不兼容。**这种同步方式不可用**：技能目录不要放 `.git`，
+版本管理以远程项目仓库为准，本地目录靠 `cp` 手动同步。
