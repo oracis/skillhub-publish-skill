@@ -862,24 +862,6 @@ def _safe_fetch_remote(slug, host_override=None):
         return None
 
 
-def rewrite_slug(md_path, slug):
-    try:
-        lines = open(md_path, encoding="utf-8").read().split("\n")
-        for i, line in enumerate(lines):
-            if line.strip().startswith("slug:"):
-                lines[i] = f"slug: {slug}"
-                open(md_path, "w", encoding="utf-8").write("\n".join(lines))
-                return True
-        for i, line in enumerate(lines):
-            if line.strip() == "---" and i > 0:
-                lines.insert(i + 1, f"slug: {slug}")
-                open(md_path, "w", encoding="utf-8").write("\n".join(lines))
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             dry_run=False, host_override=None, max_retry=7, force=False,
             category=None, subcategories=None):
@@ -1024,66 +1006,46 @@ def publish(skill_dir, version="", changelog="", icon=None, slug_override="",
             print(f"  WARN 图标上传失败（不阻断发布，将用预设图标）：{ierr}",
                   file=sys.stderr)
 
-    candidates = [base_slug]
-    if not base_slug.endswith("-skill"):
-        candidates.append(base_slug + "-skill")
-    if not base_slug.startswith("wb-"):
-        candidates.append("wb-" + base_slug)
-
+    # ---- 发布：只用声明的 slug，冲突即明确失败（不再自动换 slug / 回写本地文件）----
+    # 旧版会在 slug 被占用时自动尝试后备 slug（<slug>-skill / wb-<slug>）并回写 SKILL.md，
+    # 这会触发 ClawHub 安全扫描的 T09（「自动发布到未授权条目 + 改写本地元数据」）而拦截发布。
+    # 改为：冲突时直接失败并给出清晰建议，由用户显式决定 slug，行为更可预测、更安全。
+    payload["slug"] = base_slug
+    delay = 30
     last_status, last_body = None, {}
-    for idx, slug in enumerate(candidates):
-        payload["slug"] = slug
-        delay = 30
-        for attempt in range(max_retry):
-            last_status, last_body = post_publish(host, token, payload, files)
-            if last_status == 429:
-                ra = last_body.get("retryAfter") or delay
-                try:
-                    ra = int(ra)
-                except Exception:
-                    ra = delay
-                print(f"  [429] 限流，等待 {ra}s（{attempt+1}/{max_retry}）", file=sys.stderr, flush=True)
-                time.sleep(ra)
-                delay = min(delay * 2, 600)
-                continue
-            break
-
-        if last_status in (200, 201):
-            result = last_body if isinstance(last_body, dict) else {}
-            result["slugUsed"] = slug
-            declared = str(fm.get("slug") or "").strip()
-            # 用了后备 slug 是**重大信号**，必须显眼，别让用户以为发到了原条目上
-            if declared and slug != declared:
-                result["slugRewritten"] = True
-                result["originalSlug"] = declared
-                print(json.dumps({"success": True, "result": result},
-                                 ensure_ascii=False, indent=2))
-                print("!" * 66, file=sys.stderr)
-                print(f"! 注意：slug 已从 '{declared}' 自动改为 '{slug}'（原 slug 被占用）。",
-                      file=sys.stderr)
-                print("! 这意味着内容发到了**另一个条目**，原条目不会更新。", file=sys.stderr)
-                print("! 如果不是你想要的：改回 SKILL.md 里的 slug: 并升版重发，", file=sys.stderr)
-                print("! 再用 `publish.py mine` 检查有无重复条目。详见 references/path-traps.md",
-                      file=sys.stderr)
-                print("!" * 66, file=sys.stderr)
-                if rewrite_slug(md_path, slug):
-                    print(f"  已把 slug={slug} 回写进 SKILL.md", file=sys.stderr)
-            else:
-                print(json.dumps({"success": True, "result": result},
-                                 ensure_ascii=False, indent=2))
-            return 0
-
-        kind, advice = judge_failure(last_status, last_body)
-        print(f"  [{kind}] status={last_status} → {advice}", file=sys.stderr, flush=True)
-        body_str = json.dumps(last_body, ensure_ascii=False).lower()
-        taken = last_status == 409 or (last_status == 500 and
-                                       ("exist" in body_str or "占用" in body_str or "another user" in body_str))
-        if taken and idx < len(candidates) - 1:
-            print(f"  slug '{slug}' 被占用，尝试后备：{candidates[idx+1]}", file=sys.stderr)
+    for attempt in range(max_retry):
+        last_status, last_body = post_publish(host, token, payload, files)
+        if last_status == 429:
+            ra = last_body.get("retryAfter") or delay
+            try:
+                ra = int(ra)
+            except Exception:
+                ra = delay
+            print(f"  [429] 限流，等待 {ra}s（{attempt+1}/{max_retry}）", file=sys.stderr, flush=True)
+            time.sleep(ra)
+            delay = min(delay * 2, 600)
             continue
         break
 
+    if last_status in (200, 201):
+        result = last_body if isinstance(last_body, dict) else {}
+        result["slugUsed"] = base_slug
+        print(json.dumps({"success": True, "result": result}, ensure_ascii=False, indent=2))
+        return 0
+
     kind, advice = judge_failure(last_status, last_body)
+    body_str = json.dumps(last_body, ensure_ascii=False).lower()
+    taken = last_status == 409 or (last_status == 500 and
+                                   ("exist" in body_str or "占用" in body_str or "another user" in body_str))
+    if taken:
+        print("!" * 66, file=sys.stderr)
+        print(f"! slug '{base_slug}' 已被占用，发布被拒绝。", file=sys.stderr)
+        print("! 本次未自动改 slug、未改动本地文件。", file=sys.stderr)
+        print("! 解决：在 SKILL.md 的 frontmatter 把 slug: 改成别的名字（或加 -skill 后缀），", file=sys.stderr)
+        print("! 升版后用 `publish.py <目录> --slug <新slug>` 重新发布。", file=sys.stderr)
+        print("!" * 66, file=sys.stderr)
+    else:
+        print(f"  [{kind}] status={last_status} → {advice}", file=sys.stderr, flush=True)
     print(json.dumps({"success": False, "status": last_status, "kind": kind,
                       "advice": advice, "body": last_body}, ensure_ascii=False, indent=2))
     return 1

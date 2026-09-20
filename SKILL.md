@@ -5,7 +5,7 @@ displayName: SkillHub/ClawHub 技能发布
 summary: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖发布前预检、官方 CLI 发布链路、网页 CDP 兜底；发布后可直接回读线上版本与下载数据，并在上传被拒时用二分/ddmin 把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。
 license: MIT
 description: 把本地 Skill 打包并发布到 SkillHub（腾讯 skillhub.cn）与 ClawHub，覆盖预检、发布、状态回读与竞品对标全链路，并在上传被拒时用二分/ddmin 脚本把「服务端 WAF 拦内容（566）」与「包结构/字段问题」精确区分开。当用户说「发布技能到市场」「上架 skill」「SkillHub 提交失败」「Failed to fetch」「566」「上传 zip 报错」「技能审核状态」「版本号被拒」时使用。
-version: 1.7.1
+version: 1.7.3
 category: dev-programming
 subCategories: [dev-script, dev-git]
 platforms: [WorkBuddy, Claude Code, Codex]
@@ -149,10 +149,23 @@ python scripts/publish.py rm <slug> --yes      # 确认删除：自动「先下�
 ### Step 7 ClawHub
 
 ```bash
-clawhub publish <skill目录> --slug <slug> --version x.y.z
+clawhub skill publish <skill目录> \
+  --slug <slug> --name "<显示名>" \
+  --categories "<14 项之一>" --topics "a,b,c" \
+  --changelog "..."
 ```
 
 `--source-repo` / `--source-commit` **成对给或都不给**，只给一个报 `must be provided together`。
+
+**两条容易白费功夫的约束**（详见 `references/clawhub-catalog.md`）：
+
+- **ClawHub 没有图标能力** —— CLI 全量无 `--icon`/`--logo` 参数，SKILL.md 里放
+  `<slug>.png` 对它无效。别为 ClawHub 折腾图标链路。
+- **ClawHub 的分类 slug 是另一套（只有 14 个）**，与 SkillHub 的 13 个一级 key
+  完全不通用。最容易踩的是 `developer-tools` ❌ → 正确是 `development`。
+  传错报 `Unknown skill category slug`；超过 3 个报 `Categories are limited to 3`。
+- **传了 `--categories`/`--topics` 就一定发新版本**（即使文件没改）——这是给
+  已发布技能**补分类**的官方路径，CLI 会自动 bump patch。
 
 ### Step 8 GitHub
 
@@ -209,8 +222,9 @@ GitHub 仓库名、ClawHub `--slug`。
 | `scripts/waf_bisect.py` | 出现 566 / Failed to fetch 时定位根因 |
 | `references/waf-details.md` | 需要理解 WAF 命中特征、判据原理与规避写法时 |
 | `references/icon-upload.md` | 要传图标/封面，或怀疑图标没生效（`iconAuditStatus: null`）时 |
-| `references/categories.md` | 要填/补分类，或后台显示「未分类」时 |
-| `references/path-traps.md` | 传 `--icon` / 目录路径没生效，或 `slug` 被自动改写时 |
+| `references/categories.md` | **SkillHub** 要填/补分类，或后台显示「未分类」时 |
+| `references/clawhub-catalog.md` | **ClawHub** 要填分类/话题，或问 ClawHub 要不要图标时（14 个可用 slug） |
+| `references/path-traps.md` | 目录路径没生效、`slug` 被自动改写，或同名仓库不是扁平技能仓库时 |
 | `references/cli-install.md` | 需要安装/修复官方 CLI，或走网页 CDP 兜底路径时 |
 | `references/github-repo.md` | 需要建 GitHub 仓库并推送时 |
 

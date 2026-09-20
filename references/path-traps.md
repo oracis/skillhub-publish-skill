@@ -33,44 +33,24 @@ python publish.py publish ./my-skill --icon C:/x/icon.png
 `skill_dir` 与 `--icon` 都过这道归一化。**但脚本外自己写 curl / 其他工具时没有这层保护**，
 要么用 `C:/` 且确认没被翻译，要么用相对路径。
 
-## 坑 2：slug 自愈会**改写你的 SKILL.md**
+## 坑 2：slug 冲突现在**直接失败**，不再自动改 slug / 回写文件
 
-### 现象
+> 历史版本（`<=1.7.2`）里 `publish.py` 有个「slug 冲突自愈」功能：409/500 说 slug 被占用时，
+> 会自动试 `wb-<slug>` / `<slug>-skill` 等后备名，成功后**就地回写 SKILL.md**。
+> 这段逻辑被 ClawHub 的安全扫描（AI-Infra-Guard，规则 T09「自动发布到未授权条目 + 改写本地元数据」）
+> 判为 `suspicious`，导致含它的新版本一直卡在 `pending` 无法晋级。
+> **从 1.7.3 起已彻底移除**：slug 冲突时只明确失败并提示换名，不再动你的文件、不再发到别的条目。
 
-`publish.py` 有个「slug 冲突自愈」功能：409/500 说 slug 被占用时，
-会自动试 `wb-<slug>` 等后备名，**成功后就地把新 slug 回写进 SKILL.md**。
-
-这个「贴心」功能有副作用：
-
-```yaml
-# 原本
-slug: aliyun-oss-static-deploy-skill
-# 某次自愈成功后，文件里被改成了
-slug: wb-aliyun-oss-static-deploy-skill
-```
-
-此后每次发布会打到 `wb-...` 这个**新条目**上，而原条目再也不更新 ——
-表现为「我明明发了更新，线上还是旧版」，或者后台莫名多出一个重复技能。
-
-### 判据
+### 现在的判据与处置
 
 ```bash
 grep -n "^slug:" <skill目录>/SKILL.md     # 和目录名 / 期望值一致吗？
-python publish.py mine                    # 有没有多出 wb- / -skill 后缀的重复条目
+python publish.py mine                    # 有没有重复条目
 ```
 
-发布响应里也可看 `slugUsed` —— **它和你预期不一致就说明发生了自愈**。
-
-### 处置
-
-1. 把 SKILL.md 里的 `slug:` 改回正确值
-2. 升版本号（线上已被自愈的那次占用了旧号）
-3. 重新发布到正确 slug
-4. 用 `publish.py rm <错slug> --yes` 删掉重复条目
-
-### 预防
-
-- 发布前先 `grep "^slug:"` 对一眼
+- 若发布报 slug 被占用：在 SKILL.md 的 `slug:` 改成别的名字（或加 `-skill` 后缀），
+  升版本号后用 `python publish.py <目录> --slug <新slug>` 重新发布。
+- 不会再有「文件被悄悄改、发到另一个条目」的情况。
 - 看到 `slugUsed` 与预期不符，立刻停下检查，别继续发
 - 想彻底避免：**首次发布就用最终确定的 slug**，并且不要让它落到「被占用」的分支
 
